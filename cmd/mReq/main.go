@@ -1,45 +1,41 @@
 package main
 
 import (
-	"flag"
 	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"sync"
+
+	"github.com/fatih/color" // Make sure to import the color package
 )
 
 type ResponseDetails struct {
-	URL        string `json:"url"`
-	StatusCode int    `json:"status_code"`
-	StatusMsg  string `json:"status_msg"`
-	Error      string `json:"error,omitempty"`
+	URL        string
+	StatusCode int
+	StatusMsg  string
+	Error      string
 }
 
 func main() {
 	quiet := false
-	help := false
+	args := os.Args[1:]
+	remainingArgs := []string{}
 
-	flag.BoolVar(&quiet, "q", false, "Run in quiet mode (suppress output)")
-	flag.BoolVar(&help, "h", false, "Display help message")
-	flag.Parse()
-
-	if help || flag.NArg() == 0 {
-		flag.Usage()
-		return
+	// Manually parse arguments for the '-q' quiet flag
+	for _, arg := range args {
+		if arg == "-q" {
+			quiet = true
+		} else {
+			remainingArgs = append(remainingArgs, arg)
+		}
 	}
 
-	args := flag.Args()
-
 	var scanner *bufio.Scanner
-	if len(args) > 0 {
-		file, err := os.Open(args[0])
+	if len(remainingArgs) > 0 {
+		file, err := os.Open(remainingArgs[0])
 		if err != nil {
-			if !quiet {
-				fmt.Println("Error opening file:", err)
-			}
+			fmt.Fprintf(os.Stderr, "Error opening file: %v\n", err)
 			return
 		}
 		defer file.Close()
@@ -48,25 +44,20 @@ func main() {
 		scanner = bufio.NewScanner(os.Stdin)
 	}
 
-	// Custom HTTP transport
 	tr := &http.Transport{
 		MaxIdleConns:        100,
-		IdleConnTimeout:     90,
+		IdleConnTimeout:     90 * 1e9,
 		MaxIdleConnsPerHost: 10,
 	}
 	client := &http.Client{Transport: tr}
-	
-	// Number of worker goroutines
-	numWorkers := 10
 
-	// Channel to send URLs to workers
-	urlChan := make(chan string, numWorkers*10) // Buffer size is multiple of numWorkers to minimize blocking
+	numWorkers := 10
+	urlChan := make(chan string, numWorkers*10)
 
 	var wg sync.WaitGroup
-	var outputLock sync.Mutex
-	var output bytes.Buffer
+	var output sync.Mutex
+	var outputBuffer string
 
-	// Start worker goroutines
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
@@ -82,33 +73,43 @@ func main() {
 					details.StatusMsg = resp.Status
 				}
 				if !quiet {
-					jsonOutput, _ := json.Marshal(details)
-					outputLock.Lock()
-					output.Write(jsonOutput)
-					output.WriteByte('\n')
-					outputLock.Unlock()
+					output.Lock()
+					var outputLine string
+					if details.Error != "" {
+						outputLine = color.RedString(fmt.Sprintf("%s [ERROR]", details.URL))
+					} else {
+						// Color output based on status code
+						switch {
+						case details.StatusCode >= 200 && details.StatusCode < 300:
+							outputLine = color.GreenString(fmt.Sprintf("%s [%d]", details.URL, details.StatusCode))
+						case details.StatusCode >= 300 && details.StatusCode < 400:
+							outputLine = color.CyanString(fmt.Sprintf("%s [%d]", details.URL, details.StatusCode))
+						case details.StatusCode >= 400 && details.StatusCode < 500:
+							outputLine = color.YellowString(fmt.Sprintf("%s [%d]", details.URL, details.StatusCode))
+						case details.StatusCode >= 500:
+							outputLine = color.RedString(fmt.Sprintf("%s [%d]", details.URL, details.StatusCode))
+						default:
+							outputLine = fmt.Sprintf("%s [%d]", details.URL, details.StatusCode)
+						}
+					}
+					outputBuffer += outputLine + "\n"
+					output.Unlock()
 				}
 			}
 		}()
 	}
 
-	// Feed URLs to the worker pool
 	for scanner.Scan() {
-		url := scanner.Text()
-		urlChan <- url
+		urlChan <- scanner.Text()
 	}
 
-	// Close the URL channel to signal workers that no more URLs are coming
 	close(urlChan)
-
-	// Wait for all workers to finish
 	wg.Wait()
+
 	if !quiet {
-		fmt.Print(output.String())
+		fmt.Print(outputBuffer)
 	}
-	if scanner.Err() != nil && !quiet {
-		fmt.Println("Error reading input:", scanner.Err())
+	if scanner.Err() != nil {
+		fmt.Fprintf(os.Stderr, "Error reading input: %v\n", scanner.Err())
 	}
-	// Exit the program
-	os.Exit(0)
 }
