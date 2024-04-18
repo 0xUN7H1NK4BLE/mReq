@@ -26,7 +26,7 @@ func main() {
 	flag.BoolVar(&help, "h", false, "Display help message")
 	flag.Parse()
 
-	if help {
+	if help || flag.NArg() == 0 {
 		flag.Usage()
 		return
 	}
