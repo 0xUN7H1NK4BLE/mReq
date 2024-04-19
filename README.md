@@ -1,5 +1,6 @@
 # mReq
-make request fast
+make request fast.
+
 Its a tool written in go to sent get request fast with status code.
 
 ```bash
